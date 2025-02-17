@@ -1,0 +1,121 @@
+import os
+import pandas as pd
+import PyPDF2
+import docx
+from transformers import pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
+import numpy as np
+
+# 🔹 Configurações iniciais
+MODELO_NLP = "distilbert-base-uncased"  # Modelo local para Q&A
+DIRETORIO = r"C:\Users\never\OneDrive\Área de Trabalho\studophy"  # Diretório dos arquivos
+
+# 🔹 Inicialização do pipeline de Q&A
+qa_pipeline = pipeline("question-answering", model=MODELO_NLP)
+
+# 🔹 Função para pré-processamento de texto
+def preprocessar_texto(texto):
+    # Remover caracteres especiais e espaços extras
+    texto = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', texto)).strip()
+    return texto.lower()  # Converter para minúsculas
+
+# 🔹 Função para ler arquivos TXT
+def ler_txt(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos CSV
+def ler_csv(filepath):
+    try:
+        df = pd.read_csv(filepath, low_memory=False)
+        return df.to_string()
+    except Exception as e:
+        print(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos DOCX
+def ler_docx(filepath):
+    try:
+        doc = docx.Document(filepath)
+        return "\n".join([p.text for p in doc.paragraphs])
+    except Exception as e:
+        print(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos PDF
+def ler_pdf(filepath):
+    try:
+        with open(filepath, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    except Exception as e:
+        print(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para carregar todos os arquivos do diretório
+def carregar_arquivos(diretorio):
+    textos = []
+    for arquivo in os.listdir(diretorio):
+        caminho = os.path.join(diretorio, arquivo)
+        
+        if arquivo.endswith(".txt"):
+            texto = ler_txt(caminho)
+        elif arquivo.endswith(".csv"):
+            texto = ler_csv(caminho)
+        elif arquivo.endswith(".docx"):
+            texto = ler_docx(caminho)
+        elif arquivo.endswith(".pdf"):
+            texto = ler_pdf(caminho)
+        else:
+            continue  # Ignorar arquivos não suportados
+        
+        if texto:
+            textos.append(preprocessar_texto(texto))
+    
+    return textos
+
+# 🔹 Função para construir a base de conhecimento
+def construir_base_de_conhecimento(textos):
+    return " ".join(textos)
+
+# 🔹 Função para responder perguntas
+def responder_pergunta(pergunta, base_de_conhecimento):
+    if len(base_de_conhecimento) < 10:
+        return "Base de conhecimento vazia ou insuficiente para responder."
+    
+    # Usar TF-IDF para encontrar trechos relevantes
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform([base_de_conhecimento, pergunta])
+    similaridade = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+    
+    if similaridade < 0.1:  # Limiar de relevância
+        return "Não encontrei uma resposta relevante."
+    
+    resposta = qa_pipeline({"question": pergunta, "context": base_de_conhecimento})
+    return resposta["answer"] if resposta["score"] > 0.1 else "Não encontrei uma resposta relevante."
+
+# 🔹 Função principal
+def main():
+    print("📚 Carregando arquivos e construindo base de conhecimento...")
+    textos = carregar_arquivos(DIRETORIO)
+    base_de_conhecimento = construir_base_de_conhecimento(textos)
+    
+    print("\n🤖 IA carregada com sucesso! Faça uma pergunta ou digite 'sair' para encerrar.")
+    
+    while True:
+        pergunta = input("\nVocê: ")
+        if pergunta.lower() == "sair":
+            print("\n🛑 Encerrando IA...")
+            break
+        
+        resposta = responder_pergunta(pergunta, base_de_conhecimento)
+        print("🤖 IA:", resposta)
+
+if __name__ == "__main__":
+    main()
