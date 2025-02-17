@@ -1,0 +1,250 @@
+import os
+import pandas as pd
+import PyPDF2
+import docx
+import re
+import logging
+import json
+from transformers import pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, filedialog
+
+# 🔹 Configurações iniciais
+MODELO_NLP = "distilbert-base-uncased"  # Modelo local para Q&A
+DIRETORIO_PADRAO = r"C:\Users\never\OneDrive\Área de Trabalho\studophy"  # Diretório padrão dos arquivos
+CACHE_FILE = "base_conhecimento_cache.json"  # Arquivo de cache para a base de conhecimento
+HISTORICO_FILE = "historico_perguntas_respostas.json"  # Arquivo para salvar o histórico
+
+# 🔹 Configuração de logs
+logging.basicConfig(
+    filename="ia_logs.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logging.info("Iniciando a IA...")
+
+# 🔹 Inicialização do pipeline de Q&A
+try:
+    qa_pipeline = pipeline("question-answering", model=MODELO_NLP)
+    logging.info("Pipeline de Q&A carregado com sucesso.")
+except Exception as e:
+    logging.error(f"Erro ao carregar o pipeline de Q&A: {e}")
+    raise
+
+# 🔹 Função para pré-processamento de texto
+def preprocessar_texto(texto):
+    try:
+        texto = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', texto)).strip()
+        return texto.lower()
+    except Exception as e:
+        logging.error(f"Erro ao pré-processar texto: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos TXT
+def ler_txt(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logging.error(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos CSV
+def ler_csv(filepath):
+    try:
+        df = pd.read_csv(filepath, low_memory=False)
+        return df.to_string()
+    except Exception as e:
+        logging.error(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos DOCX
+def ler_docx(filepath):
+    try:
+        doc = docx.Document(filepath)
+        return "\n".join([p.text for p in doc.paragraphs])
+    except Exception as e:
+        logging.error(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos PDF
+def ler_pdf(filepath):
+    try:
+        with open(filepath, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    except Exception as e:
+        logging.error(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para ler arquivos XLSX (Excel)
+def ler_xlsx(filepath):
+    try:
+        df = pd.read_excel(filepath)
+        return df.to_string()
+    except Exception as e:
+        logging.error(f"Erro ao ler {filepath}: {e}")
+        return ""
+
+# 🔹 Função para carregar todos os arquivos do diretório
+def carregar_arquivos(diretorio):
+    textos = []
+    for arquivo in os.listdir(diretorio):
+        caminho = os.path.join(diretorio, arquivo)
+        
+        if arquivo.endswith(".txt"):
+            texto = ler_txt(caminho)
+        elif arquivo.endswith(".csv"):
+            texto = ler_csv(caminho)
+        elif arquivo.endswith(".docx"):
+            texto = ler_docx(caminho)
+        elif arquivo.endswith(".pdf"):
+            texto = ler_pdf(caminho)
+        elif arquivo.endswith(".xlsx"):
+            texto = ler_xlsx(caminho)
+        else:
+            logging.warning(f"Arquivo não suportado: {arquivo}")
+            continue  # Ignorar arquivos não suportados
+        
+        if texto:
+            textos.append(preprocessar_texto(texto))
+    
+    logging.info(f"Total de arquivos carregados: {len(textos)}")
+    return textos
+
+# 🔹 Função para construir a base de conhecimento
+def construir_base_de_conhecimento(textos):
+    return " ".join(textos)
+
+# 🔹 Função para salvar a base de conhecimento em cache
+def salvar_cache(base_de_conhecimento):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"base_de_conhecimento": base_de_conhecimento}, f)
+        logging.info("Cache da base de conhecimento salvo com sucesso.")
+    except Exception as e:
+        logging.error(f"Erro ao salvar cache: {e}")
+
+# 🔹 Função para carregar a base de conhecimento do cache
+def carregar_cache():
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+                logging.info("Cache da base de conhecimento carregado com sucesso.")
+                return cache["base_de_conhecimento"]
+        return None
+    except Exception as e:
+        logging.error(f"Erro ao carregar cache: {e}")
+        return None
+
+# 🔹 Função para salvar o histórico de perguntas e respostas
+def salvar_historico(pergunta, resposta):
+    try:
+        historico = []
+        if os.path.exists(HISTORICO_FILE):
+            with open(HISTORICO_FILE, "r", encoding="utf-8") as f:
+                historico = json.load(f)
+        
+        historico.append({"pergunta": pergunta, "resposta": resposta})
+        
+        with open(HISTORICO_FILE, "w", encoding="utf-8") as f:
+            json.dump(historico, f, ensure_ascii=False, indent=4)
+        logging.info("Histórico salvo com sucesso.")
+    except Exception as e:
+        logging.error(f"Erro ao salvar histórico: {e}")
+
+# 🔹 Função para responder perguntas
+def responder_pergunta(pergunta, base_de_conhecimento):
+    if len(base_de_conhecimento) < 10:
+        return "Base de conhecimento vazia ou insuficiente para responder."
+    
+    try:
+        # Usar TF-IDF para encontrar trechos relevantes
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform([base_de_conhecimento, pergunta])
+        similaridade = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+        
+        if similaridade < 0.1:  # Limiar de relevância
+            return "Não encontrei uma resposta relevante."
+        
+        resposta = qa_pipeline({"question": pergunta, "context": base_de_conhecimento})
+        return resposta["answer"] if resposta["score"] > 0.1 else "Não encontrei uma resposta relevante."
+    except Exception as e:
+        logging.error(f"Erro ao responder pergunta: {e}")
+        return "Erro ao processar a pergunta."
+
+# 🔹 Interface Gráfica com Tkinter
+class IAInterface:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("IA de Respostas Baseada em Arquivos")
+        self.root.geometry("800x600")
+        
+        # Variáveis
+        self.diretorio = DIRETORIO_PADRAO
+        self.base_de_conhecimento = carregar_cache() or ""
+        
+        # Componentes da interface
+        self.label = tk.Label(root, text="Selecione o diretório com os arquivos:")
+        self.label.pack(pady=10)
+        
+        self.btn_selecionar = tk.Button(root, text="Selecionar Diretório", command=self.selecionar_diretorio)
+        self.btn_selecionar.pack(pady=5)
+        
+        self.label_status = tk.Label(root, text="Status: Aguardando seleção de diretório...")
+        self.label_status.pack(pady=10)
+        
+        self.texto_pergunta = scrolledtext.ScrolledText(root, width=80, height=5)
+        self.texto_pergunta.pack(pady=10)
+        
+        self.btn_perguntar = tk.Button(root, text="Perguntar", command=self.fazer_pergunta)
+        self.btn_perguntar.pack(pady=5)
+        
+        self.texto_resposta = scrolledtext.ScrolledText(root, width=80, height=20)
+        self.texto_resposta.pack(pady=10)
+        
+        self.btn_sair = tk.Button(root, text="Sair", command=self.fechar_programa)
+        self.btn_sair.pack(pady=5)
+    
+    def selecionar_diretorio(self):
+        self.diretorio = filedialog.askdirectory(initialdir=DIRETORIO_PADRAO)
+        if self.diretorio:
+            self.label_status.config(text=f"Status: Carregando arquivos de {self.diretorio}...")
+            self.root.update()
+            
+            textos = carregar_arquivos(self.diretorio)
+            self.base_de_conhecimento = construir_base_de_conhecimento(textos)
+            salvar_cache(self.base_de_conhecimento)
+            
+            self.label_status.config(text=f"Status: Pronto! {len(textos)} arquivos carregados.")
+            logging.info("Base de conhecimento construída e cache salvo com sucesso.")
+    
+    def fazer_pergunta(self):
+        pergunta = self.texto_pergunta.get("1.0", tk.END).strip()
+        if not pergunta:
+            messagebox.showwarning("Aviso", "Digite uma pergunta!")
+            return
+        
+        resposta = responder_pergunta(pergunta, self.base_de_conhecimento)
+        self.texto_resposta.insert(tk.END, f"Você: {pergunta}\n")
+        self.texto_resposta.insert(tk.END, f"IA: {resposta}\n\n")
+        self.texto_pergunta.delete("1.0", tk.END)
+        
+        # Salvar no histórico
+        salvar_historico(pergunta, resposta)
+    
+    def fechar_programa(self):
+        logging.info("Programa encerrado pelo usuário.")
+        self.root.quit()
+
+# 🔹 Função principal
+def main():
+    root = tk.Tk()
+    app = IAInterface(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
